@@ -29,6 +29,7 @@ import sys
 import warnings
 
 from collections import defaultdict
+from threading import Lock
 
 from ansible import constants as C
 from ansible.module_utils._text import to_text
@@ -88,6 +89,7 @@ class PluginLoader:
 
         self._extra_dirs = []
         self._searched_paths = set()
+        self._lock = Lock()
 
     def __setstate__(self, data):
         '''
@@ -297,7 +299,6 @@ class PluginLoader:
 
                 if full_name not in self._plugin_path_cache[extension]:
                     self._plugin_path_cache[extension][full_name] = full_path
-
             self._searched_paths.add(path)
             try:
                 return pull_cache[name]
@@ -349,11 +350,15 @@ class PluginLoader:
         if path is None:
             return None
 
+        self._lock.acquire()
         if path not in self._module_cache:
             self._module_cache[path] = self._load_module_source('.'.join([self.package, name]), path)
             found_in_cache = False
+        self._lock.release()
 
+        self._lock.acquire()
         obj = getattr(self._module_cache[path], self.class_name)
+        self._lock.release()
         if self.base_class:
             # The import path is hardcoded and should be the right place,
             # so we are not expecting an ImportError.
@@ -414,15 +419,20 @@ class PluginLoader:
                 yield path
                 continue
 
+            self._lock.acquire()
             if path not in self._module_cache:
                 self._module_cache[path] = self._load_module_source(name, path)
                 found_in_cache = False
+            self._lock.release()
 
             try:
+                self._lock.acquire()
                 obj = getattr(self._module_cache[path], self.class_name)
             except AttributeError as e:
                 display.warning("Skipping plugin (%s) as it seems to be invalid: %s" % (path, to_text(e)))
                 continue
+            finally:
+                self._lock.release()
 
             if self.base_class:
                 # The import path is hardcoded and should be the right place,
